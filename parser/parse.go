@@ -256,8 +256,20 @@ func parseStructFields(ctx *Context, registry TypeRegistry, model *TypeDeclarati
 }
 
 func parseStructField(ctx *Context, registry TypeRegistry, model *TypeDeclaration, structField *types.Var) *FieldDeclaration {
+	// Even if there was no parse error, there are some types we don't really know what to do with, so skip these.
+	invalidDeclaration := func(decl *TypeDeclaration) bool {
+		if decl == nil {
+			return true
+		}
+		// If you define a field like "Payload any", the type is "any", but the reflection Kind
+		// is going to report Invalid. So we only want to omit invalid kinds that aren't the
+		// empty interface. Keep in mind that this could still be problematic for request structs,
+		// but has valid in response structs by letting you return potentially different types.
+		return decl.Kind == reflect.Invalid && decl.Type.String() != "any"
+	}
+
 	fieldType, err := registerType(ctx, registry, structField.Type())
-	if fieldType.Kind == reflect.Invalid || err != nil {
+	if err != nil || invalidDeclaration(fieldType) {
 		return nil
 	}
 

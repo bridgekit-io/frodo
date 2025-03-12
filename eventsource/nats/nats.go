@@ -89,8 +89,35 @@ func (c *client) consume(ctx context.Context, key string, group string, handlerF
 		return nil, err
 	}
 
-	// NATS doesn't like periods in the names of things. Message key/subject is fine, but the names of streams/consumers is not cool.
-	group = strings.ReplaceAll(group, ".", "_")
+	// NATS doesn't like periods in the names of things. Message key/subject is fine, but the names of
+	// streams/consumers is not cool. That's why we do the ReplaceAll().
+	//
+	// Note that we add the key as a prefix to the group. We need to do that for the following case:
+	//
+	//  type BazService interface {
+	//		// ON FooService.Foo
+	//		// ON BarService.Bar
+	//		Baz(ctx context.Context, req *BazRequest) (*BazResponse, error)
+	//	}
+	//
+	// If we only used the qualified name of the endpoint, the group would be "BazService.Baz". Even though
+	// we have 2 routes, NATS would only create a single queue that satisfies the first route (the FilterSubject
+	// option). So it would never fire for the Bar event.
+	//
+	// To rectify this, we create a separate queue for each registered event route. In the above example we'd
+	// create 2 separate durable queues:
+	//
+	//	- FooService_Foo__BazService_Baz
+	//	- BarService_Bar__BazService_Baz
+	//
+	// This ensures that events from either Foo or Bar are properly picked up by the Baz consumer.
+	var durableName string
+	switch group {
+	case "":
+		durableName = "" // this is a "subscribe without a group" so don't make it durable at all.
+	default:
+		durableName = strings.ReplaceAll(fmt.Sprintf("%s__%s", key, group), ".", "_")
+	}
 
 	// The one-hour timeout doesn't delete messages older than an hour. It just auto-cleans up the metadata about a consumer, so
 	// if you create the same group 2 hours later, NATS will just treat it like this is the first time its ever seen this group.
@@ -99,7 +126,7 @@ func (c *client) consume(ctx context.Context, key string, group string, handlerF
 	// came in while the consuming service was down. But... we don't do that yet, so this always-act-like-its-new approach
 	// is good enough for now.
 	consumer, err := stream.CreateOrUpdateConsumer(ctx, jetstream.ConsumerConfig{
-		Durable:           group,
+		Durable:           durableName,
 		InactiveThreshold: c.inactiveThreshold,
 		DeliverPolicy:     jetstream.DeliverNewPolicy,
 		FilterSubject:     key,
