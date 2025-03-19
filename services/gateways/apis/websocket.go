@@ -5,11 +5,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/bridgekit-io/frodo/fail"
 	"github.com/bridgekit-io/frodo/internal/quiet"
@@ -86,24 +89,22 @@ func ConnectWebsocket(ctx context.Context, connectionID string, opts WebsocketOp
 		return context.WithValue(context.Background(), websocketRegistryContextKey{}, sockets)
 	}
 
-	// Make sure that we automatically clean up the registry when connections close.
-	socket := Websocket{Conn: conn, ID: connectionID, Options: opts.applyDefaults(), newMessageContext: newMessageContext}
-	customOnClose := socket.Options.OnClose
-	socket.Options.OnClose = func() {
+	// Make sure that we automatically clean up the registry when connections are lost or explicitly closed.
+	opts = opts.assignDefaults(func() {
 		sockets.remove(connectionID)
-		customOnClose()
-	}
+	})
+	websocket := Websocket{Conn: conn, ID: connectionID, Options: opts, newMessageContext: newMessageContext}
 
 	// Make sure that we only have one connection for a given connection id. If the same user can be connected in
 	// different places, don't use the connection ID "user.123.web" because if they're logged in w/ 2 different
 	// browsers they'll clobber each other. Instead, do "user.123.web.TIMESTAMP" or something like that. They'll
 	// each maintain connections, and you can locate them both by doing prefix lookups on "user.123.web"
-	if old, ok := sockets.add(connectionID, &socket); ok {
+	if old, ok := sockets.add(connectionID, &websocket); ok {
 		quiet.Close(old)
 	}
 
-	socket.startListening()
-	return &socket, nil
+	websocket.startListening()
+	return &websocket, nil
 }
 
 // WebsocketOptions provides the necessary callbacks for handling incoming data read from client connections.
@@ -116,11 +117,42 @@ type WebsocketOptions struct {
 	OnReadBinary func(ctx context.Context, socket *Websocket, data []byte)
 	// OnReadContinuation provides a handler for incoming continuation frames.
 	OnReadContinuation func(ctx context.Context, socket *Websocket, data []byte)
-	// OnClose provides a custom handler that fires when this websocket is closed for any reason.
-	OnClose func()
+	// OnClose provides a custom handler that fires when this websocket is closed for any reason. This includes you manually calling
+	// the Close() method on the Websocket or the server automatically closing a seemingly dead connection.
+	OnClose func(ctx context.Context, socketID string)
+
+	// PingInterval determines how frequently the server will send op-ping frames to the client in hopes of receiving
+	// an op-pong in response. This ping/pong is how the server detects disconnected clients that abruptly ended their
+	// socket connection (e.g. lost network or lost power) without gracefully sending an op-close to let the server know
+	// about the intention to disconnect.
+	//
+	// This value allows you to control the tradeoff of network chatter vs realtime awareness. For instance, it may be okay
+	// to only send a ping every 30 seconds. True, you might go along for 29 seconds thinking a connection is fine and dandy
+	// when in reality the client dropped off, but this lets you prioritize chatter vs realtime.
+	//
+	// The default interval is 10s.
+	PingInterval time.Duration
+	// IdleTimeout indicates how long the server will keep a websocket around without receiving some sort of message or control
+	// frame from the client. The socket's lease can be extended by receiving a successful "pong" in response to a recent
+	// ping (see PingInterval for more details). Additionally, receiving a standard text/binary message will reset this since it's
+	// proof that the underlying TCP connection is still alive and well.
+	//
+	// If the server does not receive a message or a pong or any other type of data frame from the client after this amount of time,
+	// the server will close the underlying TCP connection, release any underlying resources, and invoke the OnClose handler you
+	// configure in these options.
+	//
+	// It is a good idea to set this to at least 2 to 3 times as long as PingInterval. This way, if a ping frame is somehow lost,
+	// you have more opportunities to get a sign of life from the client connection before killing the socket.
+	IdleTimeout time.Duration
 }
 
-func (opts WebsocketOptions) applyDefaults() WebsocketOptions {
+func (opts WebsocketOptions) assignDefaults(frameworkCleanup func()) WebsocketOptions {
+	if opts.PingInterval <= 0 {
+		opts.PingInterval = 5 * time.Second
+	}
+	if opts.IdleTimeout <= 0 {
+		opts.IdleTimeout = 15 * time.Second
+	}
 	if opts.OnReadText == nil {
 		opts.OnReadText = func(ctx context.Context, socket *Websocket, data []byte) {}
 	}
@@ -130,11 +162,31 @@ func (opts WebsocketOptions) applyDefaults() WebsocketOptions {
 	if opts.OnReadContinuation == nil {
 		opts.OnReadContinuation = func(ctx context.Context, socket *Websocket, data []byte) {}
 	}
-	if opts.OnClose == nil {
-		opts.OnClose = func() {}
+
+	// We want OnClose to actually run both, our internal registry cleanup handler AND whatever logic the
+	// user provides. Replace OnClose with a function that executes them both.
+	switch userCleanup := opts.OnClose; userCleanup {
+	case nil:
+		opts.OnClose = func(_ context.Context, _ string) {
+			frameworkCleanup()
+		}
+	default:
+		opts.OnClose = func(ctx context.Context, socketID string) {
+			frameworkCleanup()
+			userCleanup(ctx, socketID)
+		}
 	}
 	return opts
 }
+
+type websocketState int
+
+// We only create Websocket structs AFTER successfully upgrading the connection, so its zero starting value should be "connected".
+const (
+	websocketStateConnected websocketState = iota
+	websocketStateClosing
+	websocketStateClosed
+)
 
 // Websocket wraps the connection and other necessary information to provide everything you need to communicate
 // with the client over a recently opened websocket.
@@ -148,17 +200,14 @@ type Websocket struct {
 	Options WebsocketOptions
 	// newMessageContext is used internally to create a context intended to be used for the handling of a single message written to the socket.
 	newMessageContext func() context.Context
-}
-
-// Active returns true if the underlying connection has NOT been closed yet.
-func (socket *Websocket) Active() bool {
-	return socket.Conn != nil
+	// state helps determine where in the very simple state machine this socket resides (e.g. connected/closed).
+	state websocketState
 }
 
 // WriteText writes a frame of binary data to the client on the other end of the socket.
 func (socket *Websocket) Write(data []byte) error {
-	if !socket.Active() {
-		return fail.Unavailable("socket closed")
+	if err := socket.assertConnected(); err != nil {
+		return err
 	}
 
 	if err := wsutil.WriteServerBinary(socket.Conn, data); err != nil {
@@ -170,8 +219,8 @@ func (socket *Websocket) Write(data []byte) error {
 
 // WriteClose pushes a "close" frame to the client, letting them know that we want to close up shop.
 func (socket *Websocket) WriteClose(data []byte) error {
-	if !socket.Active() {
-		return fail.Unavailable("socket closed")
+	if err := socket.assertConnected(); err != nil {
+		return err
 	}
 
 	if err := wsutil.WriteServerMessage(socket.Conn, ws.OpClose, data); err != nil {
@@ -183,8 +232,8 @@ func (socket *Websocket) WriteClose(data []byte) error {
 
 // WriteText writes a frame of text data to the client on the other end of the socket.
 func (socket *Websocket) WriteText(data string) error {
-	if !socket.Active() {
-		return fail.Unavailable("socket closed")
+	if err := socket.assertConnected(); err != nil {
+		return err
 	}
 
 	if err := wsutil.WriteServerText(socket.Conn, []byte(data)); err != nil {
@@ -196,8 +245,8 @@ func (socket *Websocket) WriteText(data string) error {
 
 // WriteJSON marshals the given object into a JSON string and then writes a text frame to the client.
 func (socket *Websocket) WriteJSON(value any) error {
-	if !socket.Active() {
-		return fail.Unavailable("socket closed")
+	if err := socket.assertConnected(); err != nil {
+		return err
 	}
 
 	data, err := json.Marshal(value)
@@ -211,19 +260,36 @@ func (socket *Websocket) WriteJSON(value any) error {
 	return nil
 }
 
-// Close kills the current connection. This will also trigger your OnClose handler.
-func (socket *Websocket) Close() error {
-	if !socket.Active() {
+// assertConnected returns an appropriately phrased error message if the state of the socket is anything other than "connected".
+func (socket *Websocket) assertConnected() error {
+	switch socket.state {
+	case websocketStateClosing:
+		return fail.Unavailable("socket closing")
+	case websocketStateClosed:
+		return fail.Unavailable("socket closed")
+	default:
 		return nil
 	}
+}
+
+// Close kills the current connection. This will also trigger your OnClose handler.
+func (socket *Websocket) Close() error {
+	if socket.state != websocketStateConnected { // make sure another goroutine isn't already trying to close this.
+		return nil
+	}
+
+	socket.state = websocketStateClosing
+	defer func() { socket.state = websocketStateClosed }()
 
 	if socket.Options.Logger != nil {
 		socket.Options.Logger.Info("Websocket CLOSED", "websocket_id", socket.ID)
 	}
 
+	// The context.Background() is to provide the callback with a context that is not bound to any now-closed HTTP/TCP
+	// resources. It's a context dedicated to the user's callback and the task of cleanup.
 	quiet.Close(socket.Conn)
-	socket.Conn = nil // make sure this socket reference is not seen as 'Active' anymore.
-	socket.Options.OnClose()
+	socket.Conn = nil
+	socket.Options.OnClose(context.Background(), socket.ID)
 	return nil
 }
 
@@ -235,33 +301,105 @@ func (socket *Websocket) startListening() {
 		socket.Options.Logger.Info("Websocket OPENED", "websocket_id", socket.ID)
 	}
 
+	// Goroutine 1: Send OpPing frames at the configured interval and trigger the auto-close if we detect a dead connection.
+	go func() {
+		for socket.state == websocketStateConnected {
+			err := wsutil.WriteServerMessage(socket.Conn, ws.OpPing, ws.CompiledPing)
+			switch {
+			case err != nil:
+				quiet.Close(socket)
+			default:
+				time.Sleep(socket.Options.PingInterval)
+			}
+		}
+	}()
+
+	// Goroutine 2: Iterate and read all incoming frames/messages sent by the client. Each iteration is bound by the IdleTimeout to
+	// detect a seemingly-dead TCP connection.
 	go func() {
 		defer quiet.Close(socket)
-		logger := socket.Options.Logger
 
-		for socket.Active() {
-			data, op, err := wsutil.ReadClientData(socket.Conn)
-			if err != nil {
-				logger.Debug("error reading client data, closing connection",
-					"error", err,
-					"websocket_id", socket.ID,
-				)
-				break
+		var data []byte
+		var frameReader = wsutil.Reader{
+			Source:          socket.Conn,
+			State:           ws.StateServerSide,
+			CheckUTF8:       true,
+			SkipHeaderCheck: false,
+			OnIntermediate:  wsutil.ControlFrameHandler(socket.Conn, ws.StateServerSide),
+		}
+
+		for socket.state == websocketStateConnected {
+			now := time.Now()
+			deadline := now.Add(socket.Options.IdleTimeout)
+
+			// The user configures how long they're willing to let a connection linger with no communication from the client via
+			// the IdleTimeout. If we don't get a message or a pong or anything from them, we're going to close the connection
+			// because the client probably disconnected in a hurry (lost internet, powered off, etc.).
+			//
+			// While we get to ignore a lot of failures in this block, don't ignore this one! This deadline is the only way we
+			// don't let this connection just block forever with no chance of ever being used again - i.e. it will leak if there
+			// is no limit to how long we'll try. Trust me, this will work. It's a *net.TCPConn, and it supports setting deadlines,
+			// so as long as the connection is valid it will work. If this fails, the underlying TCP connection probably isn't
+			// usable anyway, and we just need to have the client reconnect.
+			if err := socket.Conn.SetDeadline(deadline); err != nil {
+				quiet.Close(socket)
+				continue
 			}
 
-			switch op {
-			case ws.OpClose:
-				break
-			case ws.OpText:
+			header, err := frameReader.NextFrame()
+			switch {
+			case errors.Is(err, os.ErrDeadlineExceeded):
+				// The client isn't sending messages or responding to pings, and it exceeded our IdleTimeout. Assume the connection is lost.
+				quiet.Close(socket)
+
+			case err != nil:
+				// Chances are the underlying *net.TCPConn is closed or hosed. Either way, the best solution is to let the client reconnect.
+				quiet.Close(socket)
+
+			/****** Control Op Codes ******/
+
+			case header.OpCode == ws.OpClose:
+				// The client either gets our ACK or it doesn't. Who cares - we're closing the socket anyway.
+				quiet.IgnoreError(frameReader.OnIntermediate(header, &frameReader))
+				quiet.Close(socket)
+
+			case header.OpCode == ws.OpPing:
+				// Try to send an OpPong in response, but don't stress over it. If we lost the connection, we'll know soon enough.
+				quiet.IgnoreError(frameReader.OnIntermediate(header, &frameReader))
+
+			case header.OpCode == ws.OpPong:
+				// We're just discarding the response, so don't worry about failure. We got some sign of life from the
+				// client, so we'll keep the connection alive... for now.
+				quiet.IgnoreError(frameReader.OnIntermediate(header, &frameReader))
+
+			/****** Message Op Codes ******/
+
+			case header.OpCode == ws.OpText:
+				if data, err = io.ReadAll(&frameReader); err != nil {
+					quiet.Close(socket)
+					continue
+				}
 				socket.Options.OnReadText(socket.newMessageContext(), socket, data)
-			case ws.OpBinary:
+
+			case header.OpCode == ws.OpBinary:
+				if data, err = io.ReadAll(&frameReader); err != nil {
+					quiet.Close(socket)
+					continue
+				}
 				socket.Options.OnReadBinary(socket.newMessageContext(), socket, data)
-			case ws.OpContinuation:
+
+			case header.OpCode == ws.OpContinuation:
+				if data, err = io.ReadAll(&frameReader); err != nil {
+					quiet.Close(socket)
+					continue
+				}
 				socket.Options.OnReadContinuation(socket.newMessageContext(), socket, data)
-			case ws.OpPing:
-				_ = wsutil.WriteServerMessage(socket.Conn, ws.OpPong, data)
-			case ws.OpPong:
-				// Ignore... clients shouldn't be sending pongs, anyway.
+
+			/****** Da-Fuck-You-Doing? Op Codes ******/
+
+			default:
+				socket.Options.Logger.Warn(fmt.Sprintf("Unexpected websocket op code '%x'", header.OpCode))
+				quiet.IgnoreError(frameReader.Discard())
 			}
 		}
 	}()
