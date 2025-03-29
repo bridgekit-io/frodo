@@ -15,13 +15,14 @@ endif
 #
 build:
 	@ \
+	mkdir -p out && \
 	go build -o out/frodo main.go
 
 install: build
 	@ \
- 	echo "Overwriting go-installed version..." && \
  	mkdir -p $$GOPATH/bin && \
- 	cp out/frodo $$GOPATH/bin/frodo
+ 	cp out/frodo $$GOPATH/bin/frodo && \
+ 	echo "Overwriting $$GOPATH/bin/frodo"
 
 #
 # Runs the all of the test suites for the entire Frodo module.
@@ -52,3 +53,10 @@ generate: build
 	go generate ./internal/testext/... && \
 	mv ./internal/testext/gen/*.client.js ./generate/testdata/js/ && \
 	mv ./internal/testext/gen/*.client.dart ./generate/testdata/dart/
+
+#
+# Blows away the build directory so the next build is absolutely from scratch.
+#
+clean:
+	@ \
+ 	rm -rf out

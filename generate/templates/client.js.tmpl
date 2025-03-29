@@ -438,9 +438,14 @@ class GatewayError {
  property type is our best-guess, but the "|*" makes sure that your editor's tooling doesn't
  pitch a fit if you know that your JS code uses different type formats.
 */}}
+{{ $packageName := .OutputPackage.Name }}
+/**
+ * @namespace {{ $packageName }}
+ */
 {{ range .Types.NonBasicTypes }}
 /**
- * @typedef { {{ . | JSTypedefType }} } {{ .Name | JoinPackageName | NoPointer }}{{ range .Fields }}
+ * @typedef { {{ . | JSTypedefType }} } {{ $packageName }}~{{ .Name | JoinPackageName | NoPointer }}
+ * {{ range .Fields }}
  * @property { {{ .Type | JSPropertyType }}|* } [{{ .Binding.Name }}]{{ end }}
 */
 {{- end }}
