@@ -14,6 +14,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/bridgekit-io/frodo/internal/naming"
+	"github.com/bridgekit-io/frodo/internal/slices"
 	"golang.org/x/tools/go/packages"
 )
 
@@ -763,6 +764,19 @@ func (reg TypeRegistry) NonBasicTypes() []*TypeDeclaration {
 		results = append(results, t)
 	}
 	return results
+}
+
+// ExternalPackageNames returns a set of any package names used by types in this service that are not defined in the service
+// package. These could be standard library package (e.g. time.Time would include "time") or some other core package in your
+// application (e.g. datastore.ID would include "datastore").
+func (reg TypeRegistry) ExternalPackageNames() []string {
+	packageNames := make([]string, 0, 8)
+	for _, t := range reg {
+		if packageName, _, ok := strings.Cut(t.Name, "."); ok {
+			packageNames = slices.AppendUnique(packageNames, packageName)
+		}
+	}
+	return packageNames
 }
 
 func (reg TypeRegistry) key(t types.Type, name string) string {
