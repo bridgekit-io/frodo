@@ -38,3 +38,13 @@ func Contains[T comparable](slice []T, value T) bool {
 	}
 	return false
 }
+
+// AppendUnique appends the value to the slice only if the slice does not contain an equivalent value.
+func AppendUnique[T comparable](slice []T, value T) []T {
+	for _, sliceValue := range slice {
+		if sliceValue == value {
+			return slice
+		}
+	}
+	return append(slice, value)
+}

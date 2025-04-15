@@ -31,7 +31,13 @@ func NoSlice(ident string) string {
 // JoinPackageName converts a package-qualified type such as "fmt.Stringer" into a single "safe" identifier
 // such as "fmtStringer". This is useful when converting types to languages with different naming semantics.
 func JoinPackageName(ident string) string {
-	return strings.ReplaceAll(ident, ".", "")
+	return JoinPackageNameWith(ident, "")
+}
+
+// JoinPackageNameWith converts a package-qualified type such as "fmt.Stringer" into a single "safe" identifier
+// such as "fmt_Stringer". This is useful when converting types to languages with different naming semantics.
+func JoinPackageNameWith(ident string, sep string) string {
+	return strings.ReplaceAll(ident, ".", sep)
 }
 
 // NoImport strips off the prefix before "/" in your type identifier (e.g. "github.com/foo/bar/Baz" -> "Baz")

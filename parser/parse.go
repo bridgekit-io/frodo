@@ -668,6 +668,9 @@ func ParseBindingOptions(ctx *Context, field *FieldDeclaration, fieldVar *types.
 	// We don't care about 'omitempty' or anything other than the remapped name. The
 	// runtime binder cares, but not the syntax parser.
 	switch name := strings.Split(tag, ",")[0]; name {
+	case "":
+		// It looked like "json:,omitempty". There are options, but no name remapping, so stick with the varName() from above.
+		return options
 	case "-":
 		options.Omit = true
 		return options

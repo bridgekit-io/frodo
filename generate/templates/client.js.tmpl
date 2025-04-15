@@ -7,6 +7,10 @@
 /* global fetch,module,window,WebSocket */
 'use strict';
 
+{{ $outputPackage := .OutputPackage }}
+{{ $packageName := .OutputPackage.Name }}
+{{ $types := .Types }}
+
 /**
  * Exposes all of the standard operations for the remote {{ .Service.Name }} service. These RPC calls
  * will be sent over http(s) to the backend service instances. {{ range .Service.Documentation }}
@@ -43,18 +47,18 @@ class {{ .Service.Name }}Client {
     /**{{ range $doc := .Documentation }}
      * {{ . }} {{ end }}
      *
-     * @param { {{ .Request.Name }} } serviceRequest The input parameters
+     * @param { {{ $packageName }}~{{ .Request.Name }} } serviceRequest The input parameters
      * @param {object} [options]
      * @param { string } [options.authorization] The HTTP Authorization header value to include
      *     in the request. This will override any authorization you might have applied when
      *     constructing this client. Use this in multi-tenant situations where multiple users
      *     might utilize this service.
     {{- if .Response.Implements.ContentGetter }}
-     * @returns {Promise<{{ .Response.Name }}> | StreamedResponse } The raw stream data returned by the server.
+     * @returns {Promise<{{ $packageName }}~{{ .Response.Name }}> | StreamedResponse } The raw stream data returned by the server.
     {{- else }} {{- if and $apiRoute $apiRoute.RouteType.Websocket }}
      * @returns {Promise< WebSocket > } The socket connection we're opening w/ the server.
     {{- else }}
-        * @returns {Promise<{{ .Response.Name }}> } The JSON-encoded return value of the operation.
+        * @returns {Promise<{{ $packageName }}~{{ .Response.Name }}> } The JSON-encoded return value of the operation.
     {{- end }}{{- end }}
      */
     async {{ .Name }}(serviceRequest, {authorization} = {}) {
@@ -438,15 +442,11 @@ class GatewayError {
  property type is our best-guess, but the "|*" makes sure that your editor's tooling doesn't
  pitch a fit if you know that your JS code uses different type formats.
 */}}
-{{ $packageName := .OutputPackage.Name }}
-/**
- * @namespace {{ $packageName }}
- */
 {{ range .Types.NonBasicTypes }}
 /**
- * @typedef { {{ . | JSTypedefType }} } {{ $packageName }}~{{ .Name | JoinPackageName | NoPointer }}
+ * @typedef { {{ JSTypedefType . $outputPackage }} } {{ JSTypedefName . $outputPackage }}
  * {{ range .Fields }}
- * @property { {{ .Type | JSPropertyType }}|* } [{{ .Binding.Name }}]{{ end }}
+ * @property { {{ JSPropertyType .Type $outputPackage }}|* } [{{ .Binding.Name }}]{{ end }}
 */
 {{- end }}
 
@@ -465,5 +465,10 @@ class GatewayError {
  * @property { number } [End]
  * @property { number } [Size]
  */
+
+/** @namespace {{ $packageName }} */
+{{ range .Types.ExternalPackageNames }}
+/** @namespace {{ . }} */
+{{ end }}
 
 export { {{ .Service.Name }}Client };

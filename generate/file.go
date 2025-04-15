@@ -193,9 +193,10 @@ var templateFuncs = template.FuncMap{
 	"ToUpper":            strings.ToUpper,
 
 	// Language/format-specific value conversions
-	"JSONType":       jsonFunctions{}.convertType,
-	"JSPropertyType": jsFunctions{}.convertPropertyType,
-	"JSTypedefType":  jsFunctions{}.convertTypedefType,
+	"JSONType":       jsonFunctions{}.toJSONType,
+	"JSPropertyType": jsFunctions{}.toPropertyType,
+	"JSTypedefType":  jsFunctions{}.toTypedefType,
+	"JSTypedefName":  jsFunctions{}.toTypedefName,
 	"JavaPackage":    javaFunctions{}.convertPackage,
 	"JavaType":       javaFunctions{}.convertType,
 	"DartType":       dartFunctions{}.convertType,
@@ -204,14 +205,21 @@ var templateFuncs = template.FuncMap{
 
 type jsFunctions struct{}
 
-func (funcs jsFunctions) convertPropertyType(t *parser.TypeDeclaration) string {
-	if !t.Basic {
-		return naming.JoinPackageName(naming.NoPointer(t.Name))
+func (funcs jsFunctions) toPropertyType(t *parser.TypeDeclaration, pkg *parser.PackageDeclaration) string {
+	switch {
+	case t.Basic:
+		// A core type like "string" or "uint64" that we need to translate to the equivalent JS primitive type.
+		return funcs.toTypedefType(t, pkg)
+	case strings.Contains(t.Name, "."):
+		// A type defined in a package different from the service's package. (e.g. "formats.Email" -> "formats~Email")
+		return naming.JoinPackageNameWith(naming.NoPointer(t.Name), "~")
+	default:
+		// A type defined in the same package as the service, so we need to JS-namespace it (e.g. "User" -> "identity~User")
+		return pkg.Name + "~" + t.Name
 	}
-	return funcs.convertTypedefType(t)
 }
 
-func (funcs jsFunctions) convertTypedefType(t *parser.TypeDeclaration) string {
+func (funcs jsFunctions) toTypedefType(t *parser.TypeDeclaration, pkg *parser.PackageDeclaration) string {
 	switch t.Kind {
 	case reflect.String:
 		return "string"
@@ -226,11 +234,11 @@ func (funcs jsFunctions) convertTypedefType(t *parser.TypeDeclaration) string {
 	case reflect.Complex64, reflect.Complex128:
 		return "number"
 	case reflect.Array, reflect.Slice:
-		elemType := funcs.convertPropertyType(t.Elem)
+		elemType := funcs.toPropertyType(t.Elem, pkg)
 		return "Array<" + elemType + ">"
 	case reflect.Map:
-		keyType := funcs.convertPropertyType(t.Key)
-		elemType := funcs.convertPropertyType(t.Elem)
+		keyType := funcs.toPropertyType(t.Key, pkg)
+		elemType := funcs.toPropertyType(t.Elem, pkg)
 		return "Map<" + keyType + "," + elemType + ">"
 	case reflect.Struct, reflect.Interface:
 		return "object"
@@ -239,9 +247,22 @@ func (funcs jsFunctions) convertTypedefType(t *parser.TypeDeclaration) string {
 	}
 }
 
+func (funcs jsFunctions) toTypedefName(t *parser.TypeDeclaration, pkg *parser.PackageDeclaration) string {
+	switch {
+	case t.Basic:
+		// A core type like "string" or "uint64" that we need to translate to the equivalent JS primitive type.
+		return funcs.toTypedefType(t, pkg)
+	case strings.Contains(t.Name, "."):
+		// A type defined in a package different from the service's package. (e.g. "formats.Email" -> "formats~Email")
+		return naming.JoinPackageNameWith(naming.NoPointer(t.Name), "~")
+	default:
+		return pkg.Name + "~" + naming.NoPointer(t.Name)
+	}
+}
+
 type jsonFunctions struct{}
 
-func (funcs jsonFunctions) convertType(t *parser.TypeDeclaration) string {
+func (funcs jsonFunctions) toJSONType(t *parser.TypeDeclaration) string {
 	switch t.Kind {
 	case reflect.String:
 		return "string"
