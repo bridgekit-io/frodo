@@ -248,7 +248,7 @@ func (server *Server) Invoke(ctx context.Context, serviceName string, methodName
 func (server *Server) Run(ctx context.Context) error {
 	server.shutdownComplete.Add(1)
 
-	errs, _ := fail.NewGroup(ctx)
+	errs, ctx := fail.NewGroup(ctx)
 	for _, gw := range server.gateways {
 		server.logger.Info("[frodo] starting gateway: " + gw.Type().String())
 		errs.Go(func() error { return gw.Listen(ctx) })
