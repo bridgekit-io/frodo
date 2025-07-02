@@ -91,7 +91,7 @@ class {{ .Service.Name }}Client {
         {{- if .Response.Implements.ContentGetter }}
         return handleResponseStream(response);
         {{- else }}
-        return handleResponseJSON(response);
+        return handleResponse(response);
         {{- end }}
         {{- end }}
 
@@ -203,11 +203,18 @@ class URLValues {
  * Accepts the full response data and the request's promise resolve/reject and determines
  * which to invoke. This will also JSON-unmarshal the response data if need be.
  */
-async function handleResponseJSON(response) {
+async function handleResponse(response) {
     if (response.status >= 400) {
         throw await newError(response);
     }
-    return await response.json();
+
+    switch (response.headers.get("content-type")) {
+    case "application/json":
+    case "text/json":
+        return response.json();
+    default:
+        return response.blob();
+    }
 }
 
 /**
@@ -315,7 +322,7 @@ function dispositionFileName(contentDisposition = '') {
 }
 
 /**
- * Determines whether or not the response has a content type of JSON.
+ * Determines whether the response has a content type of JSON.
  */
 function isJSON(response) {
     const contentType = response.headers.get('content-type');
