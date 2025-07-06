@@ -21,7 +21,7 @@ generate: build-generator
 	@ \
  	$(ROOT_DIR)/out/frodo server calc/calc_service.go && \
  	$(ROOT_DIR)/out/frodo client calc/calc_service.go && \
-	$(ROOT_DIR)/out/frodo client calc/calc_service.go --language=node
+	$(ROOT_DIR)/out/frodo client calc/calc_service.go --force --language=js
 
 
 build-generator:
