@@ -24,10 +24,11 @@ func (s SampleServiceHandler) Defaults(_ context.Context, req *SampleRequest) (*
 func (s SampleServiceHandler) ComplexValues(_ context.Context, req *SampleComplexRequest) (*SampleComplexResponse, error) {
 	s.Sequence.Append("ComplexValues:" + req.InUser.ID)
 	res := SampleComplexResponse{
-		OutFlag:    req.InFlag,
-		OutFloat:   req.InFloat,
-		OutTime:    req.InTime,
-		OutTimePtr: req.InTimePtr,
+		OutFlag:        req.InFlag,
+		OutFloat:       req.InFloat,
+		OutTime:        req.InTime,
+		OutTimePtr:     req.InTimePtr,
+		OutStringSlice: req.InStringSlice,
 		OutUser: &SampleUser{
 			ID:              req.InUser.ID,
 			Name:            req.InUser.Name,
