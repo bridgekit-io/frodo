@@ -125,15 +125,16 @@ func (encoder JSONEncoder) encodeValues(prefix string, rawValue any, out url.Val
 // JSON so that we can use the standard library's JSON package to unmarshal that data onto your out value.
 // For example, let's assume that we have the following query string:
 //
-//	?first=Bob&last=Smith&age=39&address.city=Seattle&enabled=true
+//	?first=Bob&last=Smith&age=39&address.city=Seattle&enabled=true&ids=A&ids=B&ids=C
 //
 // This decoder will first create 5 separate JSON objects:
 //
-//	{ "first": "Bob" }
-//	{ "last": "Smith" }
-//	{ "age": 39 }
-//	{ "address": { "city": "Seattle" } }     <-- notice how we handle nested values separated by "."
-//	{ "enabled": true }
+//		{ "first": "Bob" }
+//		{ "last": "Smith" }
+//		{ "age": 39 }
+//		{ "address": { "city": "Seattle" } }     <-- notice how we handle nested values separated by "."
+//		{ "enabled": true }
+//	 	{ "ids": ["A", "B", "C"] }
 //
 // After generating each value, the decoder will feed the massaged JSON to a 'json.Decoder' and standard
 // JSON marshaling rules will overlay each one onto your 'out' value.
@@ -204,28 +205,21 @@ func (decoder JSONDecoder) DecodeValues(values url.Values, out any) error {
 			continue
 		}
 
-		// Maybe you provided "foo.bar.baz=4" and there is a field at "out.foo.bar.baz", but it's
-		// a struct of some kind, so "4" is not enough to properly bind it. Arrays/slices we'll handle
-		// in a future version... maybe.
-		if valueType == jsonTypeArray {
-			continue
-		}
-
 		// Convert the parameter "foo.bar.baz=4" into {"foo":{"bar":{"baz":4}}} so that the standard
 		// JSON decoder can work its magic to apply that to 'out' properly.
 		ctx.buf.Reset()
-		decoder.writeParamJSON(ctx.buf, keySegments, value[0], valueType)
+		decoder.writeParamJSON(ctx.buf, keySegments, value, valueType)
 
 		// Now that we have a close-enough JSON representation of your parameter, let the standard
 		// JSON decoder do its magic.
 		switch err := ctx.decoder.Decode(out); {
 		case decoder.Loose:
 			// Ignore errors decoding individual fields. Set valid fields, ignore bad ones.
-		case err == nil:
-			// We wrote this field successfully. Move on.
 		case err != nil:
 			// Not in "Loose" mode, so cause the entire decoding to fail.
 			return fmt.Errorf("json decoder: value error: '%s'='%s': %w", key, value[0], err)
+		default:
+			// We wrote this field successfully. Move on.
 		}
 	}
 	return nil
@@ -234,7 +228,7 @@ func (decoder JSONDecoder) DecodeValues(values url.Values, out any) error {
 // writeParamJSON accepts the decomposed parameter key (e.g. "foo.bar.baz") and the raw string value (e.g. "moo")
 // and writes JSON to the buffer which can be used in standard JSON decoding to apply the value to the out
 // object (e.g. `{"foo":{"bar":{"baz":"moo"}}}`).
-func (decoder JSONDecoder) writeParamJSON(buf *bytes.Buffer, keySegments []string, value string, valueType jsonType) {
+func (decoder JSONDecoder) writeParamJSON(buf *bytes.Buffer, keySegments []string, value []string, valueType jsonType) {
 	for _, keySegment := range keySegments {
 		buf.WriteString(`{"`)
 		buf.WriteString(keySegment)
@@ -250,25 +244,39 @@ func (decoder JSONDecoder) writeParamJSON(buf *bytes.Buffer, keySegments []strin
 // this value. For instance, when the binder is creating the JSON {"name":"bob"} for the
 // parameter "name=bob", this function determines that "bob" is supposed to be written as a string
 // and will write `"bob"` to the buffer.
-func (decoder JSONDecoder) writeDecodingValueJSON(buf *bytes.Buffer, value string, valueType jsonType) {
+func (decoder JSONDecoder) writeDecodingValueJSON(buf *bytes.Buffer, value []string, valueType jsonType) {
 	switch valueType {
 	case jsonTypeString:
 		// Add quotes around string values if they don't already exist. This way we can support
 		// natural values like they'd appear in a URL path or query string -- or we can accept
 		// values as they appear if you go straight to/from MarshalJSON/UnmarshalJSON.
-		if strings.HasPrefix(value, `"`) && strings.HasSuffix(value, `"`) {
-			buf.WriteString(value)
+		if strings.HasPrefix(value[0], `"`) && strings.HasSuffix(value[0], `"`) {
+			buf.WriteString(value[0])
 		} else {
 			// Make sure that if your string is `Hello "WORLD"`, we don't make the value JSON {"Foo": "Hello "WORLD""}
 			// which is invalid and will break the decoder. Instead, escape the raw string, so we get a nice
 			// decode-friendly value like {"Foo": "Hello \"WORLD\""}
-			escapedJSON, _ := json.Marshal(value)
+			escapedJSON, _ := json.Marshal(value[0])
 			buf.WriteString(string(escapedJSON))
 		}
 	case jsonTypeNumber, jsonTypeBool:
-		buf.WriteString(value)
+		buf.WriteString(value[0])
 	case jsonTypeObject:
-		buf.WriteString(value)
+		buf.WriteString(value[0])
+	case jsonTypeArray:
+		// When this bug inevitably rears its ugly head, we currently only support binding arrays
+		// of string values in the query string. If you are trying to bind an array of numbers or
+		// some other type, this will not work properly. It's good enough for the use case we have now.
+		buf.WriteString("[")
+		for i, v := range value {
+			if i > 0 {
+				buf.WriteString(",")
+			}
+			buf.WriteString(`"`)
+			buf.WriteString(v)
+			buf.WriteString(`"`)
+		}
+		buf.WriteString("]")
 	default:
 		// Whether it's a nil (unknown) or object type, the binder doesn't support that type
 		// of value, so just write null to avoid binding anything if we can help it.

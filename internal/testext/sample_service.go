@@ -14,7 +14,6 @@ import (
 //go:generate ../../out/frodo client  $GOFILE --force
 //go:generate ../../out/frodo client  $GOFILE --force --language=js
 //go:generate ../../out/frodo client  $GOFILE --force --language=dart
-//go:generate ../../out/frodo mock    $GOFILE --force
 //go:generate ../../out/frodo docs    $GOFILE --force
 
 // SampleService is a mix of different options, parameter setups, and responses so that we can
@@ -308,19 +307,21 @@ func (duration CustomDuration) MarshalJSON() ([]byte, error) {
 }
 
 type SampleComplexRequest struct {
-	InUser    SampleUser
-	InFlag    bool
-	InFloat   float64
-	InTime    time.Time
-	InTimePtr *time.Time
+	InUser        SampleUser
+	InFlag        bool
+	InFloat       float64
+	InTime        time.Time
+	InTimePtr     *time.Time
+	InStringSlice []string
 }
 
 type SampleComplexResponse struct {
-	OutFlag    bool
-	OutFloat   float64
-	OutUser    *SampleUser
-	OutTime    time.Time
-	OutTimePtr *time.Time
+	OutFlag        bool
+	OutFloat       float64
+	OutUser        *SampleUser
+	OutTime        time.Time
+	OutTimePtr     *time.Time
+	OutStringSlice []string
 }
 
 type SampleDownloadRequest struct {

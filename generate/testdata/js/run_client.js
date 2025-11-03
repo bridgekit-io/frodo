@@ -50,6 +50,7 @@ async function main() {
                 InFloat: 3.14,
                 InTime: '2022-12-05T17:47:12+00:00',
                 InTimePtr: '2020-11-06T17:47:12+00:00',
+                InStringSlice: ["Dude", "Walter", "Donnie"],
             }));
         }
         case 'ComplexValuesPath': {

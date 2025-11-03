@@ -71,6 +71,7 @@ func (suite *JavaScriptClientSuite) TestComplexValues() {
 		suite.Equal("555-1234", res.OutUser.PhoneNumber)
 		suite.Equal("home@string.com", res.OutUser.MarshalToString.Home)
 		suite.Equal("work@string.com", res.OutUser.MarshalToString.Work)
+		suite.Equal([]string{"Dude", "Walter", "Donnie"}, res.OutStringSlice)
 
 		// These work in POST/PUT/PATCH calls. I'd prefer if people not use this
 		// style either way, but for now it works.

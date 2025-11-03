@@ -175,8 +175,14 @@ class URLValues {
   format() {
     const attrs = this.attrs;
     return Object.getOwnPropertyNames(this.attrs)
-      .map(attr => attr + "=" + encodeURIComponent(attrs[attr]))
+      .map(attr => this.formatAttribute(attr, attrs[attr]))
       .join("&");
+  }
+
+  formatAttribute(name, value) {
+    return Array.isArray(value)
+      ? value.map(v => this.formatAttribute(name, v)).join("&")
+      : name + "=" + encodeURIComponent(value);
   }
 
   _load(value, prefix = "") {
@@ -187,24 +193,30 @@ class URLValues {
       if (propertyValue === null) {
         continue;
       }
-      switch (typeof propertyValue) {
-      case "undefined":
-      case "symbol":
-        continue;
 
-      case "function":
-        this.attrs[propertyKey] = propertyValue();
-        continue;
-
-      case "boolean":
-      case "number":
-      case "bigint":
-      case "string":
+      if (Array.isArray(propertyValue)) {
         this.attrs[propertyKey] = propertyValue;
         continue;
+      }
 
-      default:
-        this._load(propertyValue, propertyKey);
+      switch (typeof propertyValue) {
+        case "undefined":
+        case "symbol":
+          continue;
+
+        case "function":
+          this.attrs[propertyKey] = propertyValue();
+          continue;
+
+        case "boolean":
+        case "number":
+        case "bigint":
+        case "string":
+          this.attrs[propertyKey] = propertyValue;
+          continue;
+
+        default:
+          this._load(propertyValue, propertyKey);
       }
     }
   }
