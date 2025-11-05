@@ -15,6 +15,15 @@ type transport struct {
 
 type EncodedBytes string
 
+func CopyFunc(ctx context.Context) func(context.Context) context.Context {
+	return func(newContext context.Context) context.Context {
+		newContext = withValueEntries(newContext, valueEntries(ctx))
+		newContext = WithAuthorization(newContext, Authorization(ctx))
+		newContext = WithTraceID(newContext, TraceID(ctx))
+		return newContext
+	}
+}
+
 func Encode(ctx context.Context) EncodedBytes {
 	if ctx == nil {
 		return ""

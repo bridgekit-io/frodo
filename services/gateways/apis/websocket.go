@@ -17,6 +17,7 @@ import (
 	"github.com/bridgekit-io/frodo/fail"
 	"github.com/bridgekit-io/frodo/internal/quiet"
 	"github.com/bridgekit-io/frodo/internal/radix"
+	"github.com/bridgekit-io/frodo/metadata"
 	"github.com/bridgekit-io/frodo/services"
 	"github.com/gobwas/ws"
 	"github.com/gobwas/ws/wsutil"
@@ -84,9 +85,15 @@ func ConnectWebsocket(ctx context.Context, connectionID string, opts WebsocketOp
 		return nil, fmt.Errorf("error connecting websocket: %w", err)
 	}
 
+	// Each message is going to create a new context to pass to your event handlers, so the Frodo metadata like
+	// trace id and authorization will be lost. This creates a function that will overlay those values onto the
+	// new context created below.
+	contextMetadata := metadata.CopyFunc(ctx)
+
 	// Message handlers should be able to walk the websocket registry.
 	newMessageContext := func() context.Context {
-		return context.WithValue(context.Background(), websocketRegistryContextKey{}, sockets)
+		messageCtx := contextMetadata(context.Background())
+		return context.WithValue(messageCtx, websocketRegistryContextKey{}, sockets)
 	}
 
 	// Make sure that we automatically clean up the registry when connections are lost or explicitly closed.

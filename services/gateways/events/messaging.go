@@ -3,7 +3,6 @@ package events
 import (
 	"bytes"
 	"context"
-	"net/url"
 	"strings"
 	"time"
 
@@ -31,28 +30,19 @@ type message struct {
 	// the context that we want to follow the caller as it goes from service to service.
 	Metadata metadata.EncodedBytes
 	// Values is the return value of the service method that just completed. It will be passed
-	// as the input of the subscriber(s) when they handle this event. It's the flattened value
-	// map representation of the response:
-	//
-	// Example:
-	// {
-	//   "ID": ["12345"],
-	//   "Name": ["The Dude"],
-	//   "ContactInfo.Email": ["dude@example.com"],
-	//   "ContactInfo.PhoneNumber": ["123-456-7890"],
-	//   "AuditTrail.Created": ["2022-11-11T18:48:25+00:00"],
-	//   "AuditTrail.Modified": ["2022-11-11T18:55:43+00:00"],
-	// }
-	Values url.Values
+	// as the input of the subscriber(s) when they handle this event. It's the (most likely JSON) encoded
+	// version of the service method response from the call that we're publishing for - and the structure
+	// of the request of any subscribers.
+	Values []byte
 	// ErrorStatus represents the HTTP-style status code of the failure. Will be 0 if the source call didn't fail.
 	ErrorStatus int
 	// ErrorMessage returns the "err.Error()" value of the failure (if there was one). Will be "" if the call didn't fail.
 	ErrorMessage string
 }
 
-// ErrorHandler returns true if this published message represents a method call that failed and is being routed to
+// ErrorPresent returns true if this published message represents a method call that failed and is being routed to
 // something like "FooService.Bar:Error" rather than "FooService.Bar".
-func (m message) ErrorHandler() bool {
+func (m message) ErrorPresent() bool {
 	return strings.HasSuffix(m.Key, errorKeySuffix)
 }
 
@@ -86,11 +76,17 @@ func publishMiddleware(broker eventsource.Broker, encoder codec.Encoder, valueEn
 
 			switch {
 			case err == nil:
+				valueJSON := &strings.Builder{}
+				_ = encoder.Encode(valueJSON, response)
+
 				msg.Key = endpoint.QualifiedName()
-				msg.Values = valueEncoder.EncodeValues(response)
+				msg.Values = []byte(valueJSON.String())
 			case err != nil:
+				valueJSON := &strings.Builder{}
+				_ = encoder.Encode(valueJSON, req)
+
 				msg.Key = endpoint.QualifiedName() + errorKeySuffix
-				msg.Values = valueEncoder.EncodeValues(req)
+				msg.Values = []byte(valueJSON.String())
 				msg.ErrorStatus = fail.Status(err)
 				msg.ErrorMessage = err.Error()
 			}
