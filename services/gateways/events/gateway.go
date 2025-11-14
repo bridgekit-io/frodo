@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"log"
 	"net/url"
 	"strconv"
 	"strings"
@@ -35,7 +34,14 @@ func NewGateway(options ...GatewayOption) *Gateway {
 		listening:      &sync.WaitGroup{},
 		activeRequests: &sync.WaitGroup{},
 		errorListener: func(route metadata.EndpointRoute, err error) {
-			log.Printf("[events error] [%s] %v\n", route.QualifiedName(), err)
+			// I'm leaving this commented out rather than deleting it to document that
+			// it was an intentional decision to make the default listener do nothing. It's
+			// better to have the user opt into whatever logging/handling they want rather
+			// than forcing a random log line that doesn't conform to their standard log/slog
+			// format. If they're following remotely sane practices, they'll have logging
+			// middleware on the service that prints the failure anyway.
+			//
+			// log.Printf("[events error] [%s] %v\n", route.QualifiedName(), err)
 		},
 	}
 	for _, option := range options {
