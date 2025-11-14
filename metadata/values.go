@@ -139,3 +139,14 @@ func WithValue(ctx context.Context, key string, value any) context.Context {
 	entries[key] = &valuesEntry{Value: value}
 	return ctx
 }
+
+func valueEntries(ctx context.Context) values {
+	return ctx.Value(contextKeyValues{}).(values)
+}
+
+func withValueEntries(ctx context.Context, entries values) context.Context {
+	if ctx == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, contextKeyValues{}, entries)
+}

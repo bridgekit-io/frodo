@@ -4,8 +4,9 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"log"
+	"net/url"
 	"strconv"
+	"strings"
 	"sync"
 
 	"github.com/bridgekit-io/frodo/codec"
@@ -33,7 +34,14 @@ func NewGateway(options ...GatewayOption) *Gateway {
 		listening:      &sync.WaitGroup{},
 		activeRequests: &sync.WaitGroup{},
 		errorListener: func(route metadata.EndpointRoute, err error) {
-			log.Printf("[events error] [%s] %v\n", route.QualifiedName(), err)
+			// I'm leaving this commented out rather than deleting it to document that
+			// it was an intentional decision to make the default listener do nothing. It's
+			// better to have the user opt into whatever logging/handling they want rather
+			// than forcing a random log line that doesn't conform to their standard log/slog
+			// format. If they're following remotely sane practices, they'll have logging
+			// middleware on the service that prints the failure anyway.
+			//
+			// log.Printf("[events error] [%s] %v\n", route.QualifiedName(), err)
 		},
 	}
 	for _, option := range options {
@@ -129,6 +137,51 @@ func (gw *Gateway) Register(endpoint services.Endpoint, endpointRoute services.E
 }
 
 func (gw *Gateway) toStreamHandler(endpoint services.Endpoint, route services.EndpointRoute) eventsource.EventHandlerFunc {
+	// decodeRequestBody uses the (likely JSON) decoder to overlay the response values of the source method
+	// onto the request of the handling method.
+	decodeRequestBody := func(event message, serviceRequest services.StructPointer) error {
+		valueReader := strings.NewReader(string(event.Values))
+		if err := gw.decoder.Decode(valueReader, &serviceRequest); err != nil {
+			return fmt.Errorf("error decoding source event request values: %w", err)
+		}
+		return nil
+	}
+
+	// decodeErrorFields only concerns itself with events for source methods that returned a
+	// non-nil error (i.e. they failed). It tries to decode the error message/status onto the
+	// request structure using some fairly common naming conventions.
+	decodeErrorFields := func(event message, serviceRequest services.StructPointer) error {
+		if !event.ErrorPresent() {
+			return nil
+		}
+
+		// Allow you to define your error as simply the field 'Error string' on your request or an error struct
+		// that has either an Error or Message string attribute. The status follows the naming conventions of
+		// status codes in the 'fail' package - any will work. We don't know what names/shape they'll use in their
+		// request struct, but we'll try to accommodate these fairly common field layouts.
+		errorStatus := strconv.FormatInt(int64(event.ErrorStatus), 10)
+		errorValues := url.Values{
+			// Flat attributes directly on the request struct.
+			"Error":               []string{event.ErrorMessage},
+			"ErrorCode":           []string{errorStatus},
+			"ErrorStatus":         []string{errorStatus},
+			"ErrorStatusCode":     []string{errorStatus},
+			"ErrorHTTPStatusCode": []string{errorStatus},
+
+			// You have an 'Error' field which is a struct that contains these values.
+			"Error.Error":      []string{event.ErrorMessage},
+			"Error.Message":    []string{event.ErrorMessage},
+			"Error.Code":       []string{errorStatus},
+			"Error.Status":     []string{errorStatus},
+			"Error.StatusCode": []string{errorStatus},
+		}
+
+		if err := gw.valueDecoder.DecodeValues(errorValues, &serviceRequest); err != nil {
+			return fmt.Errorf("error decoding source event error: %w", err)
+		}
+		return nil
+	}
+
 	return func(ctx context.Context, msg *eventsource.EventMessage) error {
 		gw.activeRequests.Add(1)
 		defer gw.activeRequests.Done()
@@ -142,27 +195,17 @@ func (gw *Gateway) toStreamHandler(endpoint services.Endpoint, route services.En
 			return nil
 		}
 
-		// If this is a subscriber to a failure key, make sure we can bind the original error details to the
-		// request of the handler.
-		if event.ErrorHandler() {
-			// Allow you to define your error as simply the field 'Error string' on your request or an error struct
-			// that has either an Error or Message string attribute.
-			event.Values.Set("Error", event.ErrorMessage)
-			event.Values.Set("Error.Error", event.ErrorMessage)
-			event.Values.Set("Error.Message", event.ErrorMessage)
-
-			// We support binding the status code to any of the interfaces supported by the 'fail' package.
-			status := strconv.FormatInt(int64(event.ErrorStatus), 10)
-			event.Values.Set("Error.Code", status)
-			event.Values.Set("Error.Status", status)
-			event.Values.Set("Error.StatusCode", status)
-			event.Values.Set("Error.HTTPStatusCode", status)
+		// If the source method was a failure/error rather than a success, also decode the
+		// error details onto the request struct if they exist. For success events, this will simply nop.
+		if err := decodeErrorFields(event, serviceRequest); err != nil {
+			gw.errorListener(event.Route, err)
+			return nil
 		}
 
 		// The message contains the raw encoded bytes for the response of the service
 		// method that triggered the event. Overlay that data on this handler's input.
-		if err := gw.valueDecoder.DecodeValues(event.Values, &serviceRequest); err != nil {
-			gw.errorListener(event.Route, fmt.Errorf("event payload decode error: %w", err))
+		if err := decodeRequestBody(event, serviceRequest); err != nil {
+			gw.errorListener(event.Route, err)
 			return nil
 		}
 
